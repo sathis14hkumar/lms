@@ -1,0 +1,151 @@
+CREATE COMPUTE MODULE MQ_LMSRouter_Processing
+	CREATE FUNCTION Main() RETURNS BOOLEAN
+	BEGIN
+		DECLARE FuncId, ConfigQuery CHARACTER '';
+		SET FuncId = UPPER(InputRoot.XMLNSC.[<].SR_HEADER.FuncId);
+		IF InputRoot.MQRFH2.usr.SourceQueue <> '' THEN
+			SET Environment.MQ.QueueNames.NEWQUEUE = InputRoot.MQRFH2.usr.SourceQueue||'.MR';
+			SET Environment.MQ.QueueNames.OLDQUEUE = InputRoot.MQRFH2.usr.SourceQueue||'.OLD';
+		ELSE
+			--Query the QUEUECONFIG table and get the old and new queue names based on the Function id
+			SET ConfigQuery = 'SELECT OLDQUEUE, NEWQUEUE FROM SLMS.LMS_DECOUPLER_QUEUECONFIG_TBL WHERE FUNCID = '''||FuncId||'''';
+			SET Environment.MQ.QueueNames[] = PASSTHRU(ConfigQuery);		
+		END IF;
+		--If the FuncId is not LOYALTY_INQUIRY_ITEMS and no Queue name is found in the QueueConfig table, throw a user exception error
+		IF NOT EXISTS(Environment.MQ.QueueNames[]) THEN
+			THROW USER EXCEPTION CATALOG 'BIPmsgs' MESSAGE 2620 VALUES('Target queue not found in the LMS_DECOUPLER_QUEUECONFIG_TBL for the Function id '||FuncId ) ;
+		END IF;
+		
+		-- Declare variables and set the values from the payload
+		DECLARE MSISDN, PackageId, RequestorChannelId, LMSQuery CHARACTER '';
+		DECLARE MSISDN_Found BOOLEAN FALSE;
+		DECLARE InRef REFERENCE TO InputRoot.XMLNSC.[<];
+		SET RequestorChannelId = UPPER(InRef.SR_HEADER.RequestorChannelId);
+		
+		--Set MSISDN value from different fields from the input message
+		IF InRef.MSISDN IS NOT NULL AND InRef.MSISDN <> '' THEN
+			SET MSISDN = InRef.MSISDN;
+		ELSEIF InRef.msisdn IS NOT NULL AND InRef.msisdn <> '' THEN
+			SET MSISDN = InRef.msisdn;
+		ELSEIF InRef.Msisdn IS NOT NULL AND InRef.Msisdn <> '' THEN
+			SET MSISDN = InRef.Msisdn;
+		ELSEIF InRef.AP_MSISDN IS NOT NULL AND InRef.AP_MSISDN <> '' THEN
+			SET MSISDN = InRef.AP_MSISDN;
+		ELSEIF InRef.RootAccountNumber IS NOT NULL AND InRef.RootAccountNumber <> '' THEN
+			SET MSISDN = InRef.RootAccountNumber;
+		ELSEIF InRef.AP_MobileNumber IS NOT NULL AND InRef.AP_MobileNumber <> '' THEN
+			SET MSISDN = InRef.AP_MobileNumber;
+		ELSEIF InRef.PackageId IS NOT NULL AND InRef.PackageId <> '' THEN
+			SET MSISDN = InRef.PackageId;
+		ELSEIF InRef.ServiceAcctNumber IS NOT NULL AND InRef.ServiceAcctNumber <> '' THEN
+			SET MSISDN = InRef.ServiceAcctNumber;
+		ELSEIF InRef.LineNumber IS NOT NULL AND InRef.LineNumber <> '' THEN
+			SET MSISDN = InRef.LineNumber;
+		ELSEIF InRef.OldMSISDN IS NOT NULL AND InRef.OldMSISDN <> '' THEN
+			SET MSISDN = InRef.OldMSISDN;
+		ELSEIF InRef.NewMSISDN IS NOT NULL AND InRef.NewMSISDN <> '' THEN
+			SET MSISDN = InRef.NewMSISDN;
+		ELSE
+			SET MSISDN = '';
+		END IF; 
+		
+		IF FuncId = 'LINE_ACTIVATION' OR FuncId = 'CREATE_ACCOUNT' THEN
+			--Query LP_BASE_PACKAGE_CODE table with PackageId value
+			SET LMSQuery = 'SELECT * From SLMS.LP_BASE_PACKAGE_CODE Where
+							PACKAGE_ID ='''||COALESCE(InRef.PackageId,'')||'''';
+		ELSE
+			--Query memberprofile table with MSISDN values on different columns
+			SET LMSQuery = 'SELECT * From SLMS.MEMBERPROFILE Where
+							MSISDN = '''||MSISDN ||''' OR
+							ACCOUNTNUMBER='''||MSISDN||''' OR
+							CUST_REF='''||MSISDN||''' OR
+							MEMBERSHIPID='''||MSISDN||'''';			
+		END IF;
+		--Execute LMS Query
+		SET Environment.MQ.Result[] = PASSTHRU(LMSQuery);
+		
+		IF EXISTS(Environment.MQ.Result[]) THEN
+			SET MSISDN_Found = TRUE;
+		ELSE
+			DECLARE Index INTEGER 1;
+			-- Check for multiple LineNumber in Lines field
+			IF EXISTS(InRef.Lines.LineNumber[]) THEN
+				DECLARE Count INTEGER CARDINALITY (InRef.Lines.LineNumber[]);
+				X:WHILE Index <= Count DO
+					SET MSISDN = InRef.Lines.LineNumber[Index];
+					--Query memberprofile table with MSISDN values on different columns
+					SET LMSQuery = 'SELECT * From SLMS.MEMBERPROFILE Where MSISDN = '''||MSISDN||'''';
+					SET Environment.MQ.Result[] = PASSTHRU(LMSQuery);				
+					IF NOT EXISTS(Environment.MQ.Result[]) THEN
+						SET MSISDN_Found = FALSE;
+						LEAVE X;
+					ELSE
+						SET MSISDN_Found = TRUE;
+						SET Index = Index + 1;
+					END IF;
+				END WHILE;
+			-- Check for multiple MSISDN in Lines field
+			ELSEIF EXISTS(InRef.Lines.MSISDN[]) THEN
+				DECLARE Count INTEGER CARDINALITY (InRef.Lines.MSISDN[]);
+				X:WHILE Index <= Count DO
+					SET MSISDN = InRef.Lines.MSISDN[Index];
+					--Query memberprofile table with MSISDN values on different columns
+					SET LMSQuery = 'SELECT * From SLMS.MEMBERPROFILE Where MSISDN = '''||MSISDN||'''';
+					SET Environment.MQ.Result[] = PASSTHRU(LMSQuery);				
+					IF NOT EXISTS(Environment.MQ.Result[]) THEN
+						SET MSISDN_Found = FALSE;
+						LEAVE X;
+					ELSE
+						SET MSISDN_Found = TRUE;
+						SET Index = Index + 1;
+					END IF;
+				END WHILE;
+			-- Check for multiple MSISDN in Lines field
+			ELSEIF EXISTS(InRef.RETURN_LIST.LineNumber[]) THEN
+				DECLARE Count INTEGER CARDINALITY (InRef.RETURN_LIST.LineNumber[]);
+				X:WHILE Index <= Count DO
+					SET MSISDN = InRef.RETURN_LIST.LineNumber[Index];
+					--Query memberprofile table with MSISDN values on different columns
+					SET LMSQuery = 'SELECT * From SLMS.MEMBERPROFILE Where MSISDN = '''||MSISDN||'''';
+					SET Environment.MQ.Result[] = PASSTHRU(LMSQuery);				
+					IF NOT EXISTS(Environment.MQ.Result[]) THEN
+						SET MSISDN_Found = FALSE;
+						LEAVE X;
+					ELSE
+						SET MSISDN_Found = TRUE;
+						SET Index = Index + 1;
+					END IF;
+				END WHILE;	
+			-- Else set MSISDN_Found = FALSE;		
+			ELSE
+				SET MSISDN_Found = FALSE;
+			END IF;
+						
+		END IF;
+		
+		--If MSISDN_Found is TRUE then propagate the message to new queue else to the OLD queue
+		IF MSISDN_Found = TRUE OR MSISDN_Found = true THEN
+			SET OutputLocalEnvironment.Destination.MQ.DestinationData[1].queueName = Environment.MQ.QueueNames.NEWQUEUE;
+		ELSE
+			SET OutputLocalEnvironment.Destination.MQ.DestinationData[1].queueName = Environment.MQ.QueueNames.OLDQUEUE;
+		END IF;
+		
+		CALL CopyEntireMessage();
+		
+		RETURN TRUE;
+	END;
+
+	CREATE PROCEDURE CopyMessageHeaders() BEGIN
+		DECLARE I INTEGER 1;
+		DECLARE J INTEGER;
+		SET J = CARDINALITY(InputRoot.*[]);
+		WHILE I < J DO
+			SET OutputRoot.*[I] = InputRoot.*[I];
+			SET I = I + 1;
+		END WHILE;
+	END;
+
+	CREATE PROCEDURE CopyEntireMessage() BEGIN
+		SET OutputRoot = InputRoot;
+	END;
+END MODULE;

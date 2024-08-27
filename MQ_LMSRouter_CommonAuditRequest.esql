@@ -1,0 +1,133 @@
+CREATE COMPUTE MODULE MQ_LMSRouter_CommonAuditRequest
+	CREATE FUNCTION Main() RETURNS BOOLEAN
+	BEGIN
+		CALL CopyEntireMessage();
+
+		DECLARE inRef REFERENCE TO InputRoot.XMLNSC.[<];
+		DECLARE envRef REFERENCE TO Environment.Variables;
+		
+		SET envRef.InputRoot = InputRoot;
+		DECLARE MSISDN CHARACTER '';
+		--Set MSISDN variable from different fields from the message
+		IF inRef.MSISDN IS NOT NULL AND inRef.MSISDN <> '' THEN
+			SET MSISDN = inRef.MSISDN;
+		ELSEIF inRef.msisdn IS NOT NULL AND inRef.msisdn <> '' THEN
+			SET MSISDN = inRef.msisdn;
+		ELSEIF inRef.Msisdn IS NOT NULL AND inRef.Msisdn <> '' THEN
+			SET MSISDN = inRef.Msisdn;
+		ELSEIF inRef.AP_MSISDN IS NOT NULL AND inRef.AP_MSISDN <> '' THEN
+			SET MSISDN = inRef.AP_MSISDN;
+		ELSEIF inRef.RootAccountNumber IS NOT NULL AND inRef.RootAccountNumber <> '' THEN
+			SET MSISDN = inRef.RootAccountNumber;
+		ELSEIF inRef.AP_MobileNumber IS NOT NULL AND inRef.AP_MobileNumber <> '' THEN
+			SET MSISDN = inRef.AP_MobileNumber;
+		ELSEIF inRef.PackageId IS NOT NULL AND inRef.PackageId <> '' THEN
+			SET MSISDN = inRef.PackageId;
+		ELSEIF inRef.ServiceAcctNumber IS NOT NULL AND inRef.ServiceAcctNumber <> '' THEN
+			SET MSISDN = inRef.ServiceAcctNumber;
+		ELSEIF inRef.LineNumber IS NOT NULL AND inRef.LineNumber <> '' THEN
+			SET MSISDN = inRef.LineNumber;
+		ELSEIF inRef.OldMSISDN IS NOT NULL AND inRef.OldMSISDN <> '' THEN
+			SET MSISDN = inRef.OldMSISDN;
+		ELSEIF inRef.NewMSISDN IS NOT NULL AND inRef.NewMSISDN <> '' THEN
+			SET MSISDN = inRef.NewMSISDN;
+		ELSE
+			SET MSISDN = '';
+		END IF;
+			
+		--If MSISDN is not found from above conditon, Check Lines field for multiple LineNumber values					  
+		IF MSISDN = '' AND EXISTS(inRef.Lines.LineNumber[])  THEN 
+			DECLARE Index INTEGER 1;
+			DECLARE Count INTEGER CARDINALITY (inRef.Lines.LineNumber[]);
+			WHILE Index <= Count DO
+				IF Index = Count THEN
+					SET MSISDN = MSISDN || inRef.Lines.LineNumber[Index];
+				ELSE
+					SET MSISDN = MSISDN || inRef.Lines.LineNumber[Index]||',';
+				END IF;
+				SET Index = Index + 1;
+			END WHILE;
+		--If MSISDN is not found from above conditon, Check Lines field for multiple MSISDN values
+		ELSEIF MSISDN = '' AND EXISTS(inRef.Lines.MSISDN[]) THEN
+			DECLARE Index INTEGER 1;
+			DECLARE Count INTEGER CARDINALITY (inRef.Lines.MSISDN[]);
+			WHILE Index <= Count DO
+				IF Index = Count THEN
+					SET MSISDN = MSISDN || inRef.Lines.MSISDN[Index];
+				ELSE
+					SET MSISDN = MSISDN || inRef.Lines.MSISDN[Index]||','; 
+				END IF;
+				SET Index = Index + 1;
+			END WHILE;
+		--If MSISDN is not found from above conditon, Check RETURN_LIST field for multiple LineNumber values
+		ELSEIF MSISDN = '' AND EXISTS(inRef.RETURN_LIST.LineNumber[]) THEN
+			DECLARE Index INTEGER 1;
+			DECLARE Count INTEGER CARDINALITY (inRef.RETURN_LIST.LineNumber[]);
+			WHILE Index <= Count DO
+				IF Index = Count THEN
+					SET MSISDN = MSISDN || inRef.RETURN_LIST.LineNumber[Index];
+				ELSE
+					SET MSISDN = MSISDN || inRef.RETURN_LIST.LineNumber[Index]||',';
+				END IF;
+				SET Index = Index + 1;
+			END WHILE;
+		ELSE
+			SET MSISDN = ''; 
+		END IF;		
+		
+		SET envRef.AuditRequest.SRID 			= envRef.SRID;
+		SET envRef.AuditRequest.MessageType		= 'Request received';
+        SET envRef.AuditRequest.FuncId 			= '';
+        SET envRef.AuditRequest.TrackPointId 	= '';
+        SET envRef.AuditRequest.ChannelId       = inRef.SR_HEADER.RequestorChannelId;
+        SET envRef.AuditRequest.MSISDN 			= MSISDN;
+        SET envRef.AuditRequest.Status 			= '1';
+        SET envRef.AuditRequest.TableName		= 'LMS_DECOUPLER_AUDIT_TBL';
+        
+        
+        -- Insert the record in LMS_DECOUPLER_TRANS_TBL for the first time
+        --Transaction Table
+		INSERT INTO Database.LMS_DECOUPLER_TRANS_TBL (
+		SR_ID,
+		MSISDN,
+		CREATE_TIME_STAMP,
+		STATUS,
+		CHANNEL_ID,
+		ERROR_CODE,
+		ERROR_MESSAGE,
+		FUNCNAME,
+		ENDPOINT,
+		LAST_UPDATED_TS
+		)
+		VALUES (
+		envRef.SRID,
+		MSISDN,
+		CURRENT_TIMESTAMP,
+		'1',
+		inRef.SR_HEADER.RequestorChannelId, 	
+		null, 
+		null,
+		inRef.SR_HEADER.FuncId,
+		null,
+		null 		
+		);
+        PASSTHRU('Commit');
+        
+		
+		RETURN TRUE;
+	END;
+
+	CREATE PROCEDURE CopyMessageHeaders() BEGIN
+		DECLARE I INTEGER 1;
+		DECLARE J INTEGER;
+		SET J = CARDINALITY(InputRoot.*[]);
+		WHILE I < J DO
+			SET OutputRoot.*[I] = InputRoot.*[I];
+			SET I = I + 1;
+		END WHILE;
+	END;
+
+	CREATE PROCEDURE CopyEntireMessage() BEGIN
+		SET OutputRoot = InputRoot;
+	END;
+END MODULE;

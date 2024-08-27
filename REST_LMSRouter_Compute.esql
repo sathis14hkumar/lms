@@ -1,0 +1,55 @@
+DECLARE AuthAction EXTERNAL CHARACTER '';
+DECLARE ConfAction EXTERNAL CHARACTER '';
+DECLARE OldAuthAction EXTERNAL CHARACTER '';
+DECLARE OldConfAction EXTERNAL CHARACTER '';
+
+CREATE COMPUTE MODULE REST_LMSRouter_Compute
+	CREATE FUNCTION Main() RETURNS BOOLEAN
+	BEGIN
+		-- Declare variables and set the MSISDN value from the payload
+		DECLARE MSISDN,LMSQuery CHARACTER '';
+		IF InputRoot.JSON.Data.MSISDN IS NOT NULL AND InputRoot.JSON.Data.MSISDN <> '' THEN
+			SET MSISDN = InputRoot.JSON.Data.MSISDN;
+		ELSEIF InputRoot.JSON.Data.msisdn IS NOT NULL AND InputRoot.JSON.Data.msisdn <> '' THEN
+			SET MSISDN = InputRoot.JSON.Data.msisdn;
+		ELSEIF InputRoot.JSON.Data.Msisdn IS NOT NULL AND InputRoot.JSON.Data.Msisdn <> '' THEN
+			SET MSISDN = InputRoot.JSON.Data.Msisdn;
+		END IF;
+
+		SET LMSQuery = 'SELECT * From SLMS.MEMBERPROFILE Where MSISDN = '''||MSISDN||'''';
+		SET Environment.Rest.Result[] = PASSTHRU(LMSQuery);
+		IF EXISTS(Environment.Rest.Result[]) THEN
+			--If some result found in MemberProfile table use the target LMS Api based on the input
+			IF Environment.Variables.SourceApi = '/partner/authorize-action' THEN
+				SET OutputLocalEnvironment.Destination.HTTP.RequestURL = AuthAction;
+			ELSE
+				SET OutputLocalEnvironment.Destination.HTTP.RequestURL = ConfAction;
+			END IF;				
+		ELSE
+		    --else use the old LMS api
+		    IF Environment.Variables.SourceApi = '/partner/authorize-action' THEN
+				SET OutputLocalEnvironment.Destination.HTTP.RequestURL = OldAuthAction;
+			ELSE
+				SET OutputLocalEnvironment.Destination.HTTP.RequestURL = OldConfAction;
+			END IF;
+		END IF;
+		
+		CALL CopyEntireMessage();
+		
+		RETURN TRUE;
+	END;
+
+	CREATE PROCEDURE CopyMessageHeaders() BEGIN
+		DECLARE I INTEGER 1;
+		DECLARE J INTEGER;
+		SET J = CARDINALITY(InputRoot.*[]);
+		WHILE I < J DO
+			SET OutputRoot.*[I] = InputRoot.*[I];
+			SET I = I + 1;
+		END WHILE;
+	END;
+
+	CREATE PROCEDURE CopyEntireMessage() BEGIN
+		SET OutputRoot = InputRoot;
+	END;	
+END MODULE;
